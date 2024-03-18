@@ -3,24 +3,67 @@ const log4js = require("log4js");
 let rp = require("request-promise-native");
 
 // Import config
-let SMSAMOVIL_URL = require("../config/integrations.config").SMSAMOVIL_URL;
-let SMSAMOVIL_AUTH = require("../config/integrations.config").SMSAMOVIL_AUTH;
-let SMSAMOVIL_APIKEY = require("../config/integrations.config").SMSAMOVIL_APIKEY;
-let SMSAMOVIL_COUNTRY = require("../config/integrations.config").SMSAMOVIL_COUNTRY;
-let SMSAMOVIL_DIAL = require("../config/integrations.config").SMSAMOVIL_DIAL;
-let SMSAMOVIL_TAG = require("../config/integrations.config").SMSAMOVIL_TAG;
-let SMSAMOVIL_TIMEOUT = require("../config/integrations.config").SMSAMOVIL_TIMEOUT;
+let SMS_URL = require("../config/integrations.config").SMS_URL;
+let SMS_AUTH = require("../config/integrations.config").SMS_AUTH;
+let SMS_CLIENTID = require("../config/integrations.config").SMS_CLIENTID;
+let SMS_CLIENTSECRET = require("../config/integrations.config").SMS_CLIENTSECRET;
+let SMS_TIMEOUT = require("../config/integrations.config").SMS_TIMEOUT;
+let SMS_TOKENDURATION = require("../config/integrations.config").SMS_TOKENDURATION;
+
 // Obtengo logger
 let logger = log4js.getLogger('ServerScripts');
 
 // Importo clase SQLConector
-const SQLConector = require('./sql.shared.js');
-const sqlConector = new SQLConector();
+const MySQLConector = require('./mysql.shared.js');
+const mysqlConector = new MySQLConector();
 
 // Function to consume queue
 class SMSSender{
+
   
   constructor(){}
+
+  async autenticar(){
+    try{
+      let requestAuth = {
+        grant_type: "client_credentials",
+        client_id: SMS_CLIENTID,
+        client_secret: SMS_CLIENTSECRET
+      }
+
+      // Armo el request
+      let url = SMS_AUTH;
+      
+      let options = {
+        url: url,
+        method: "POST",
+        body: requestAuth,
+        json: true,
+        strictSSL: false,
+        timeout: SMS_TIMEOUT,
+        headers:{
+          "Content-Type": "application/json"
+        }
+      }
+
+      let responseAuth;
+      let sqlResponse;
+
+      // Ejecuto el POST
+      await rp(options).then(function (response) {
+        responseAuth = response;
+      })  
+
+      sqlResponse = await mysqlConector.updateTokenStoreProcedure(responseAuth.access_token, SMS_TOKENDURATION);
+      
+      return responseAuth.access_token;
+    }
+    catch{
+      logger.error("Ocurrio un error al Autenticar al WS del proveedor, error: ")
+      logger.error(err);   
+      return null; 
+    }
+  }
 
   async sendSMS(request){
     let message = request.message;
@@ -28,19 +71,45 @@ class SMSSender{
     let msisdns = request.addresses;
 
     try {
-    
+
+        let responseToken;
+        let token;
+        let estado;
+
+        responseToken = await mysqlConector.getTokenStoreProcedure();
+
+        estado = responseToken.estado;
+        token = responseToken.tokenPrevio;
+
+        if(estado == 1){
+          token = await autenticar();
+        }
+
+        if(!token){
+          logger.error("Ocurrio un error al obtener token");
+          return false;
+        }
+
+        // Formo el request
+        var contacts = []
+
+        for(let msisdn of msisdns){
+          contacts.push(
+            {
+                mobile:{
+                    number: msisdn
+                }
+            })
+        }
+
         // Formo el body del request del proveedor
         let requestSMS = {
-            apiKey: SMSAMOVIL_APIKEY,
-            country: SMSAMOVIL_COUNTRY,
-            dial: SMSAMOVIL_DIAL,
-            message: message,
-            msisdns: msisdns,
-            tag: SMSAMOVIL_TAG
+            contacts: contacts,
+            template: message
         }
         
         // Armo el request
-        let url = SMSAMOVIL_URL;
+        let url = SMS_URL;
         
         let options = {
           url: url,
@@ -48,10 +117,10 @@ class SMSSender{
           body: requestSMS,
           json: true,
           strictSSL: false,
-          timeout: SMSAMOVIL_TIMEOUT,
+          timeout: SMS_TIMEOUT,
           headers:{
             "Content-Type": "application/json",
-            "Authorization": SMSAMOVIL_AUTH
+            "Authorization": "Bearer " + token
           }
         }
 
@@ -62,12 +131,12 @@ class SMSSender{
         await rp(options).then(function (response) {
           responseSMS = response;
         })  
-        sqlResponse = await sqlConector.executeStoredProcedure(msisdns.toString(), JSON.stringify(requestSMS), JSON.stringify(responseSMS), SMSAMOVIL_URL);
+        sqlResponse = await mysqlConector.logStoreProcedure(msisdns.toString(), JSON.stringify(requestSMS), JSON.stringify(responseSMS), SMS_URL);
 
     } catch (err) {
       logger.error("Ocurrio un error al enviar SMS al proveedor, error: ")
       logger.error(err);
-      sqlResponse = await sqlConector.executeStoredProcedure(msisdns.toString(), JSON.stringify(requestSMS), err, SMSAMOVIL_URL);
+      sqlResponse = await mysqlConector.logStoreProcedure(msisdns.toString(), JSON.stringify(requestSMS), err, SMS_URL);
     }
   }
 }
