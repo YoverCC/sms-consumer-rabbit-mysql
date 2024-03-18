@@ -82,7 +82,7 @@ class SMSSender{
         token = responseToken.tokenPrevio;
 
         if(estado == 1){
-          token = await autenticar();
+          token = await this.autenticar();
         }
 
         if(!token){
